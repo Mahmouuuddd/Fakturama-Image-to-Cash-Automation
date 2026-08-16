@@ -1,0 +1,51 @@
+{
+  "order_date": "2026-08-14",
+  "external_reference": "PO-2026-0042",
+  "currency": "EUR",
+  "debtor": {
+    "company": "Example Manufacturing GmbH",
+    "first_name": "Ada",
+    "last_name": "Lovelace",
+    "alias": "EXAMPLE-MFG",
+    "billing_address": {
+      "street": "Example Street 12",
+      "zip": "10115",
+      "city": "Berlin",
+      "country": "Germany",
+      "email": "accounts@example.invalid",
+      "telephone": "+49 30 5550100"
+    },
+    "delivery_address": null
+  },
+  "payment": {
+    "method": "Bank Transfer",
+    "status": "PAID",
+    "payment_date": "2026-08-14"
+  },
+  "items": [
+    {
+      "sku": "SKU-001",
+      "description": "Industrial Widget",
+      "quantity": "2",
+      "unit_net_price": "100.00",
+      "vat_percent": "19",
+      "discount_percent": "10",
+      "source_total": "180.00"
+    },
+    {
+      "sku": "SKU-002",
+      "description": "Calibration Service",
+      "quantity": "1",
+      "unit_net_price": "50.00",
+      "vat_percent": "7",
+      "discount_percent": "0",
+      "source_total": "50.00"
+    }
+  ],
+  "totals": {
+    "total_net": "230.00",
+    "total_vat": "37.70",
+    "total_gross": "267.70"
+  }
+}
+

@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fakturama-image-to-cash"
+version = "0.1.0"
+description = "Verified image-to-Order-to-Invoice desktop automation for Fakturama"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "pydantic>=2.8,<3",
+  "python-dotenv>=1,<2",
+  "requests>=2.32,<3",
+]
+
+[project.optional-dependencies]
+ocr = [
+  "Pillow>=10",
+  "opencv-contrib-python==4.10.0.84",
+  "paddlepaddle>=3.3,<3.4",
+  "paddleocr>=3.7,<3.8",
+  "paddlex[ocr]>=3.7,<3.8",
+  "easyocr>=1.7,<2",
+]
+uia = [
+  "pywinauto>=0.6.8,<0.7",
+]
+dev = [
+  "pytest>=8,<9",
+]
+
+[project.scripts]
+fakturama-automation = "fakturama_automation.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
