@@ -252,11 +252,11 @@ activities.
   the other states route to review until an explicit UI business mapping exists.
 - The checked-in Fakturama 2.2.0 English UIA profile must be validated against
   the installed locale, workspace, visible columns, and SWT accessibility tree.
-- The source procedure documents how to assign one Main address when billing and
-  delivery are identical, but it does not define the UI sequence for creating a
-  second, distinct delivery address. That creation branch therefore stops for
-  manual review instead of guessing an `Add address` action. Existing Debtors
-  with distinct addresses can still be selected and verified.
+- The Main address is assigned the Invoice role. When billing and delivery are
+  identical, it is also assigned the Delivery role. When they differ, the
+  current recording workflow continues without creating or assigning a second
+  address; the extracted delivery address remains in the audit artifacts but is
+  intentionally not written to the newly created Debtor.
 - Fakturama startup readiness is configured in that profile. The default waits
   up to 300 seconds for a cold start, discovers the SWT top-level handle through
   Win32, reconnects it through UIA, and ignores splash screens until a known

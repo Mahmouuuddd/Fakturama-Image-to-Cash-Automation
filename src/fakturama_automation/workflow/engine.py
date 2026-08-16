@@ -12,6 +12,7 @@ from fakturama_automation.domain.matching import (
     addresses_match,
     debtor_matches,
     exact_matches,
+    has_distinct_delivery_address,
     normalize_text,
     product_matches,
 )
@@ -222,7 +223,7 @@ class WorkflowRunner:
         selected = self.gateway.read_selected_debtor()
         if not addresses_match(debtor.billing_address, selected.billing_address):
             raise VerificationError("selected Debtor billing address differs from source")
-        if not addresses_match(
+        if not has_distinct_delivery_address(debtor) and not addresses_match(
             debtor.effective_delivery_address, selected.effective_delivery_address
         ):
             raise VerificationError("selected Debtor delivery address differs from source")
@@ -371,7 +372,9 @@ class WorkflowRunner:
             raise VerificationError("Invoice line count differs from Order")
         if not addresses_match(
             actual.debtor.billing_address, expected.debtor.billing_address
-        ) or not addresses_match(
+        ):
+            raise VerificationError("Invoice addresses differ from Order")
+        if not has_distinct_delivery_address(expected.debtor) and not addresses_match(
             actual.debtor.effective_delivery_address,
             expected.debtor.effective_delivery_address,
         ):

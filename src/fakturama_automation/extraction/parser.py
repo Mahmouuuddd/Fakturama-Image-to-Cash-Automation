@@ -15,7 +15,7 @@ from .evidence import (
 )
 from .verification import (
     apply_focused_repair,
-    merge_trusted_address_claims,
+    merge_trusted_debtor_claims,
     merge_trusted_item_claims,
     merge_trusted_total_claims,
     normalize_delivery_presence,
@@ -24,6 +24,8 @@ from .verification import (
     relevant_evidence_payload,
     sanitize_unverified_claims,
     trusted_address_claims,
+    trusted_company_claims,
+    trusted_contact_name_claims,
     trusted_item_claims,
     trusted_total_claims,
     verify_claims,
@@ -192,19 +194,24 @@ class CompatibleChatOrderParser:
 
     def parse(self, evidence: EvidenceDocument) -> ExtractionDraft:
         delivery_present, trusted_addresses = trusted_address_claims(evidence)
+        trusted_debtor = [
+            *trusted_addresses,
+            *trusted_company_claims(evidence),
+            *trusted_contact_name_claims(evidence),
+        ]
         trusted_count, trusted_claims = trusted_item_claims(evidence)
         trusted_totals = trusted_total_claims(evidence)
         resolved_paths = sorted(
             claim.path
-            for claim in [*trusted_addresses, *trusted_claims, *trusted_totals]
+            for claim in [*trusted_debtor, *trusted_claims, *trusted_totals]
         )
         prompt = self._extraction_prompt(evidence, trusted_count, resolved_paths)
         compact = self._request_compact(prompt)
         compact = normalize_optional_placeholders(compact)
         compact = normalize_delivery_presence(compact, evidence)
         compact = normalize_proven_ambiguities(compact, evidence)
-        compact = merge_trusted_address_claims(
-            compact, delivery_present, trusted_addresses
+        compact = merge_trusted_debtor_claims(
+            compact, delivery_present, trusted_debtor
         )
         compact = merge_trusted_item_claims(compact, trusted_count, trusted_claims)
         compact = merge_trusted_total_claims(compact, trusted_totals)
@@ -224,8 +231,8 @@ class CompatibleChatOrderParser:
             repaired = normalize_delivery_presence(repaired, evidence)
             repaired = normalize_proven_ambiguities(repaired, evidence)
             compact = apply_focused_repair(compact, repaired, issues)
-            compact = merge_trusted_address_claims(
-                compact, delivery_present, trusted_addresses
+            compact = merge_trusted_debtor_claims(
+                compact, delivery_present, trusted_debtor
             )
             compact = merge_trusted_item_claims(compact, trusted_count, trusted_claims)
             compact = merge_trusted_total_claims(compact, trusted_totals)

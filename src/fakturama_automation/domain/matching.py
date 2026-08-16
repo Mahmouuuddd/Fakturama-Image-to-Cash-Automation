@@ -33,6 +33,19 @@ def addresses_match(expected: Address, actual: Address) -> bool:
     )
 
 
+def has_distinct_delivery_address(debtor: Debtor) -> bool:
+    return debtor.delivery_address is not None and not addresses_match(
+        debtor.billing_address, debtor.delivery_address
+    )
+
+
+def main_address_only(debtor: Debtor) -> Debtor:
+    """Represent a Fakturama Debtor when no second address is created."""
+    if not has_distinct_delivery_address(debtor):
+        return debtor
+    return debtor.model_copy(update={"delivery_address": None})
+
+
 def debtor_matches(expected: Debtor, actual: DebtorCandidate) -> bool:
     return all(
         (
@@ -55,4 +68,3 @@ def exact_matches(
     candidates: Sequence[T], predicate: Callable[[T], bool]
 ) -> list[T]:
     return [candidate for candidate in candidates if predicate(candidate)]
-

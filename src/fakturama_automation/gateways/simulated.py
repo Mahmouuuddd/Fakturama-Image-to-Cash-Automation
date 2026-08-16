@@ -6,8 +6,8 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
 
-from fakturama_automation.domain.errors import ManualReviewRequired, VerificationError
-from fakturama_automation.domain.matching import addresses_match
+from fakturama_automation.domain.errors import VerificationError
+from fakturama_automation.domain.matching import main_address_only
 from fakturama_automation.domain.models import (
     Debtor,
     DebtorCandidate,
@@ -119,15 +119,7 @@ class SimulatedFakturamaGateway:
 
     def open_new_debtor(self, debtor: Debtor) -> None:
         self.events.append("open_new_debtor")
-        delivery = debtor.delivery_address
-        if delivery is not None and not addresses_match(
-            debtor.billing_address, delivery
-        ):
-            raise ManualReviewRequired(
-                "Take Home §2.8 does not define how to create a distinct delivery "
-                "address after the documented Main-address fields are prepared"
-            )
-        self._pending_debtor = deepcopy(debtor)
+        self._pending_debtor = deepcopy(main_address_only(debtor))
         self._pending_payment_method = None
 
     def select_debtor_payment_method(self, payment_method: str) -> bool:

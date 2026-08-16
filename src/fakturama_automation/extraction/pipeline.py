@@ -578,14 +578,22 @@ def _normalize_address_claims(
 
 def _component_matches(value: str, component: str, other: str) -> bool:
     normalized = normalize_text(value).strip(" ,")
+    if not normalized:
+        return True
     expected = normalize_text(component).strip(" ,")
-    combined = {
+    if normalized == expected:
+        return True
+    combined_options = [
         normalize_text(f"{component} {other}").strip(" ,"),
         normalize_text(f"{other} {component}").strip(" ,"),
         normalize_text(f"{component}, {other}").strip(" ,"),
         normalize_text(f"{other}, {component}").strip(" ,"),
-    }
-    return normalized == expected or normalized in combined
+    ]
+    if any(normalized == opt for opt in combined_options):
+        return True
+    if any(normalized in opt for opt in combined_options):
+        return True
+    return False
 
 
 def _split_postal_city(value: str, country: str) -> tuple[str, str] | None:

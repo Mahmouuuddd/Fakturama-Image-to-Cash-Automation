@@ -50,6 +50,7 @@ from fakturama_automation.extraction.verification import (
     normalize_optional_placeholders,
     normalize_proven_ambiguities,
     trusted_address_claims,
+    trusted_company_claims,
     trusted_item_claims,
     trusted_total_claims,
 )
@@ -183,6 +184,59 @@ def test_trusted_addresses_reject_an_ambiguous_postal_column() -> None:
 
     assert delivery_present is True
     assert claims == []
+
+
+def test_trusted_company_uses_one_explicit_label_and_value() -> None:
+    document = EvidenceDocument(
+        document_id="company-test",
+        source_path="order.png",
+        source_sha256="0" * 64,
+        pages=(EvidencePage(page=1, width=1000, height=600),),
+        spans=(
+            EvidenceSpan(
+                id="company-label",
+                text="COMPANY",
+                confidence=0.99,
+                bbox=(80, 100, 220, 130),
+                reading_order=0,
+            ),
+            EvidenceSpan(
+                id="company-value",
+                text="Northstar Office GmbH",
+                confidence=0.99,
+                bbox=(80, 145, 330, 175),
+                reading_order=1,
+            ),
+            EvidenceSpan(
+                id="contact-label",
+                text="CONTACT NAME",
+                confidence=0.99,
+                bbox=(620, 100, 820, 130),
+                reading_order=2,
+            ),
+            EvidenceSpan(
+                id="contact-value",
+                text="Marta Klein",
+                confidence=0.99,
+                bbox=(620, 145, 780, 175),
+                reading_order=3,
+            ),
+            EvidenceSpan(
+                id="later-label",
+                text="CUSTOMER ALIAS",
+                confidence=0.99,
+                bbox=(80, 225, 260, 255),
+                reading_order=4,
+            ),
+        ),
+    )
+
+    claims = trusted_company_claims(document)
+
+    assert len(claims) == 1
+    assert claims[0].path == "debtor.company"
+    assert claims[0].value == "Northstar Office GmbH"
+    assert claims[0].evidence_ids == ["company-label", "company-value"]
 
 
 def test_trusted_totals_refuse_duplicate_labels() -> None:
@@ -505,6 +559,47 @@ def test_conflicting_combined_and_separate_address_values_stop_authorization(
     assert any(
         issue.code == "CONFLICTING_ADDRESS_COMPONENTS"
         and issue.path == "debtor.billing_address"
+        for issue in outcome.report.issues
+    )
+
+
+def test_partitioned_postal_city_normalizes_to_proven_format(
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "order.png"
+    Image.new("RGB", (300, 500), "white").save(image_path)
+    draft = _valid_draft()
+    draft.debtor.billing_address.zip.value = "3011"
+    draft.debtor.billing_address.zip.evidence_ids = ["ocr_0006"]
+    draft.debtor.billing_address.city.value = "PZ Rotterdam"
+    draft.debtor.billing_address.city.evidence_ids = ["ocr_0006"]
+    draft.debtor.billing_address.country.value = "Netherlands"
+    draft.debtor.billing_address.country.evidence_ids = ["ocr_0008"]
+
+    class DutchAddressOcr(StubOcr):
+        def recognize(self, image_path: Path) -> OcrResult:
+            result = super().recognize(image_path)
+            result.lines[5] = OcrLine(
+                text="3011 PZ Rotterdam",
+                confidence=0.99,
+                bounding_box=result.lines[5].bounding_box,
+            )
+            result.lines[7] = OcrLine(
+                text="Netherlands",
+                confidence=0.99,
+                bounding_box=result.lines[7].bounding_box,
+            )
+            return result
+
+    outcome = ImageOrderExtractor(DutchAddressOcr(), StubParser(draft)).extract(
+        image_path
+    )
+
+    assert outcome.order is not None
+    assert outcome.order.debtor.billing_address.zip == "3011 PZ"
+    assert outcome.order.debtor.billing_address.city == "Rotterdam"
+    assert not any(
+        issue.code == "CONFLICTING_ADDRESS_COMPONENTS"
         for issue in outcome.report.issues
     )
 

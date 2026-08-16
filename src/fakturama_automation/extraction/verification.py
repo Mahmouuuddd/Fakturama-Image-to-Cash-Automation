@@ -100,6 +100,15 @@ _TOTAL_LABELS = {
 }
 _BILLING_ADDRESS_LABELS = {"billing address", "bill to", "invoice address"}
 _DELIVERY_ADDRESS_LABELS = {"delivery address", "shipping address", "ship to"}
+_COMPANY_LABELS = {"company", "customer company", "business name"}
+_CONTACT_NAME_LABELS = {
+    "contact name",
+    "contact person",
+    "contact",
+    "customer name",
+    "name",
+    "ansprechpartner",
+}
 _ADDRESS_SECTION_BOUNDARIES = {
     "items",
     "order items",
@@ -283,7 +292,94 @@ def trusted_address_claims(
     return True, [*billing, *delivery]
 
 
-def merge_trusted_address_claims(
+def trusted_company_claims(evidence: EvidenceDocument) -> list[FieldClaim]:
+    """Ground one company value attached to one explicit company label."""
+    labels = [
+        span for span in evidence.spans if _label_text(span.text) in _COMPANY_LABELS
+    ]
+    if len(labels) != 1:
+        return []
+    label = labels[0]
+    candidates = []
+    for span in evidence.spans:
+        if span.id == label.id or span.page != label.page or not span.text.strip():
+            continue
+        score = _text_label_value_score(label, span)
+        if score is not None:
+            candidates.append((score, span))
+    candidates.sort(key=lambda item: item[0])
+    if not candidates:
+        return []
+    best_score = candidates[0][0]
+    best = [span for score, span in candidates if score == best_score]
+    if len(best) != 1:
+        return []
+    value = best[0]
+    return [
+        FieldClaim(
+            path="debtor.company",
+            value=value.text.strip(),
+            evidence_ids=[label.id, value.id],
+            ambiguity=None,
+        )
+    ]
+
+
+def trusted_contact_name_claims(evidence: EvidenceDocument) -> list[FieldClaim]:
+    """Ground first and last name attached to an explicit contact name label."""
+    labels = [
+        span
+        for span in evidence.spans
+        if _label_text(span.text) in _CONTACT_NAME_LABELS
+    ]
+    if len(labels) != 1:
+        return []
+    label = labels[0]
+    candidates = []
+    for span in evidence.spans:
+        if span.id == label.id or span.page != label.page or not span.text.strip():
+            continue
+        score = _text_label_value_score(label, span)
+        if score is not None:
+            candidates.append((score, span))
+    candidates.sort(key=lambda item: item[0])
+    if not candidates:
+        return []
+    best_score = candidates[0][0]
+    best = [span for score, span in candidates if score == best_score]
+    if len(best) != 1:
+        return []
+    value = best[0]
+    parts = value.text.strip().split(maxsplit=1)
+    if len(parts) == 2:
+        first, last = parts
+        return [
+            FieldClaim(
+                path="debtor.first_name",
+                value=first.strip(),
+                evidence_ids=[label.id, value.id],
+                ambiguity=None,
+            ),
+            FieldClaim(
+                path="debtor.last_name",
+                value=last.strip(),
+                evidence_ids=[label.id, value.id],
+                ambiguity=None,
+            ),
+        ]
+    elif len(parts) == 1:
+        return [
+            FieldClaim(
+                path="debtor.last_name",
+                value=parts[0].strip(),
+                evidence_ids=[label.id, value.id],
+                ambiguity=None,
+            ),
+        ]
+    return []
+
+
+def merge_trusted_debtor_claims(
     response: CompactExtractionClaims,
     delivery_present: bool | None,
     trusted_claims: list[FieldClaim],
@@ -763,6 +859,31 @@ def _total_value_score(
             1,
             right_gap,
         )
+    return None
+
+
+def _text_label_value_score(
+    label: EvidenceSpan, value: EvidenceSpan
+) -> tuple[int, int, int] | None:
+    """Associate a form label with its nearest row before considering alignment."""
+    label_left, label_top, label_right, label_bottom = label.bbox
+    value_left, value_top, value_right, value_bottom = value.bbox
+    label_height = max(1, label_bottom - label_top)
+    value_height = max(1, value_bottom - value_top)
+    horizontal_overlap = min(label_right, value_right) - max(label_left, value_left)
+    vertical_overlap = min(label_bottom, value_bottom) - max(label_top, value_top)
+    label_center_x = (label_left + label_right) // 2
+    value_center_x = (value_left + value_right) // 2
+    label_center_y = (label_top + label_bottom) // 2
+    value_center_y = (value_top + value_bottom) // 2
+
+    below_gap = value_top - label_bottom
+    if horizontal_overlap > 0 and 0 <= below_gap <= 4 * max(label_height, value_height):
+        return (0, below_gap, abs(value_center_x - label_center_x))
+
+    right_gap = value_left - label_right
+    if vertical_overlap > 0 and 0 <= right_gap <= 12 * max(label_height, value_height):
+        return (1, right_gap, abs(value_center_y - label_center_y))
     return None
 
 

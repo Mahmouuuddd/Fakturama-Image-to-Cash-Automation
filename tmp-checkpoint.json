@@ -1,0 +1,29 @@
+{
+  "workflow_id": null,
+  "state": "FINAL_VERIFIED",
+  "external_reference": "PO-2026-0042",
+  "order_number": "ORD-00001",
+  "invoice_number": "INV-00002",
+  "order_document": {
+    "record_id": "document-1",
+    "document_type": "Order",
+    "number": "ORD-00001",
+    "date": "2026-08-14",
+    "external_reference": "PO-2026-0042",
+    "state": "open",
+    "total": "267.70",
+    "transaction_id": "b72b03eb5af74e1f849e1559c7ac391c"
+  },
+  "invoice_document": {
+    "record_id": "document-2",
+    "document_type": "Invoice",
+    "number": "INV-00002",
+    "date": "2026-08-16",
+    "external_reference": "PO-2026-0042",
+    "state": "unpaid",
+    "total": "267.70",
+    "transaction_id": "b72b03eb5af74e1f849e1559c7ac391c"
+  },
+  "screenshot": null,
+  "details": {}
+}

@@ -192,7 +192,7 @@ def test_available_exact_payment_option_is_used_without_opening_master_data(
     assert "create_payment_method" not in gateway.events
 
 
-def test_distinct_delivery_address_stops_at_first_undocumented_creation_action(
+def test_distinct_delivery_address_uses_main_invoice_address_and_continues(
     tmp_path: Path,
 ) -> None:
     order = load_order()
@@ -213,12 +213,16 @@ def test_distinct_delivery_address_stops_at_first_undocumented_creation_action(
         EvidenceRecorder(tmp_path),
     )
 
-    with pytest.raises(ManualReviewRequired, match="does not define.*distinct delivery"):
-        runner.run(order)
+    result = runner.run(order)
 
-    assert runner.state is WorkflowState.MANUAL_REVIEW
+    assert result.state is WorkflowState.FINAL_VERIFIED
     assert gateway.events.count("open_new_debtor") == 1
-    assert not gateway.documents
+    saved_candidate, _ = next(iter(gateway.debtors.values()))
+    assert saved_candidate.delivery_address is None
+    assert {document.document_type for document in gateway.documents.values()} == {
+        "Order",
+        "Invoice",
+    }
 
 
 def test_explicit_identical_delivery_reuses_main_address_branch(tmp_path: Path) -> None:

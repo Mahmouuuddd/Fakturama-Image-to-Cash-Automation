@@ -9,31 +9,54 @@
   "search_stabilization_seconds": 0.75,
   "save_stabilization_seconds": 0.75,
   "titles": {
-    "new_order": ["New Order"],
-    "new_invoice": ["New Invoice"],
-    "new_debtor": ["New Debtor"],
-    "new_product": ["New Product"],
-    "select_address": ["Select the address"],
-    "select_product": ["Select a product"]
+    "new_order": ["New Order", "*New Order"],
+    "new_invoice": ["New Invoice", "*New Invoice"],
+    "new_debtor": [
+      "New Debtor",
+      "New Contact",
+      "New debtor",
+      "New contact",
+      "*New Debtor",
+      "*New Contact",
+      "*New debtor",
+      "*New contact"
+    ],
+    "new_product": ["New Product", "*New Product"],
+    "select_address": ["Select the address", "Select address"],
+    "select_product": ["Select a product", "Select product"]
   },
   "actions": {
     "new_order": ["Create: New Order", "Order"],
     "new_contact": ["Create a new contact", "New Contact"],
     "new_product": ["Create a new product", "New product"],
+    "new_payment_method": [
+      "Create a new term of payment",
+      "Create a new payment method",
+      "New term of payment",
+      "New payment method"
+    ],
     "select_address": ["Select address"],
     "select_product": ["Select product"],
     "follow_up_invoice": ["Invoice"],
     "invoice_address_role": ["Invoice address"],
     "delivery_address_role": ["Delivery address"],
     "paid": ["paid"],
-    "save": ["Save"],
+    "save": ["Save", "Save (Ctrl+S)", "Save document", "&Save"],
     "ok": ["OK"],
     "cancel": ["Cancel"]
   },
   "tabs": {
-    "addresses": ["Addresses"],
+    "addresses": ["Addresses", "Address"],
     "miscellaneous": ["Miscellaneous"],
-    "payment": ["Payment"]
+    "payment": [
+      "Payment",
+      "Payment Method",
+      "Payment method",
+      "Payment / Delivery",
+      "Payment & Delivery",
+      "Terms of payment",
+      "Term of payment"
+    ]
   },
   "labels": {
     "document_number": ["No."],
@@ -47,14 +70,15 @@
     "order_vat_mode": ["VAT"],
     "debtor_price_mode": ["Net or Gross"],
     "order_discount": ["Discount"],
-    "shipping": ["Shipping"],
+    "shipping_value": ["Shipping"],
+    "shipping_vat": ["Shipping VAT"],
     "search": ["Search", "Search:"],
     "company": ["Company"],
-    "debtor_name_row": ["First Name Last Name"],
+    "debtor_name_row": ["First Name Last Name", "First Name", "Last Name"],
     "first_name": ["First Name"],
     "last_name": ["Last Name", "Name"],
     "name": ["Name"],
-    "alias": ["Alias name", "Alias"],
+    "alias": ["Alias name", "Alias Name"],
     "street": ["Street"],
     "zip": ["ZIP"],
     "city": ["City"],
@@ -67,8 +91,30 @@
     "district": ["district", "District"],
     "salutation": ["Salutation"],
     "discount": ["Discount"],
-    "payment_method": ["Payment Method"],
-    "payment_code": ["Payment code"],
+    "payment_method": [
+      "Payment",
+      "Payment Method",
+      "Payment method",
+      "Terms of payment",
+      "Term of payment",
+      "Payment:",
+      "Payment Method:",
+      "Payment method:",
+      "Terms of payment:",
+      "Term of payment:"
+    ],
+    "payment_code": [
+      "Payment code",
+      "Payment Code",
+      "Payment code (E-Invoice)",
+      "Payment Code (E-Invoice)",
+      "Code",
+      "Code (E-Invoice)",
+      "Payment type",
+      "Payment Type",
+      "Payment code:",
+      "Code:"
+    ],
     "cash_discount": ["Cash discount"],
     "discount_days": ["Discount Days"],
     "net_days": ["Net Days"],
@@ -114,7 +160,13 @@
     "city": ["City"],
     "payment_name": ["Name"],
     "description": ["Description"],
-    "payment_code": ["Payment code"],
+    "payment_code": [
+      "Payment code",
+      "Payment Code",
+      "Payment code (E-Invoice)",
+      "Code",
+      "Payment type"
+    ],
     "vat_name": ["Name"],
     "vat_value": ["Value"],
     "vat_code": ["VAT code (E-Invoice)"]

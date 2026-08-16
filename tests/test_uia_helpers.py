@@ -14,7 +14,11 @@ from fakturama_automation.gateways.uia import (
     UiaProfile,
     _parse_decimal,
 )
-from fakturama_automation.domain.models import Address, Debtor
+from fakturama_automation.domain.models import (
+    Address,
+    Debtor,
+    PaymentMethodCandidate,
+)
 
 
 def test_uia_profile_is_valid_json() -> None:
@@ -112,10 +116,121 @@ def test_unnamed_list_plus_is_grounded_to_table_upper_right(tmp_path: Path) -> N
     assert distractor.invoked == 0
 
 
+def test_new_payment_method_action_uses_named_command_before_geometry_fallback(
+    tmp_path: Path,
+) -> None:
+    class FakeSession:
+        def __init__(self):
+            self.calls = []
+
+        def invoke(self, names):
+            self.calls.append(("invoke", names))
+
+        def invoke_upper_right_list_plus(self, *, scope=None):
+            self.calls.append(("plus", scope))
+
+        def set_labeled_value(self, label_names, value):
+            self.calls.append(("set_labeled_value", label_names, value))
+
+        def set_labeled_decimal(self, label_names, value):
+            self.calls.append(("set_labeled_decimal", label_names, str(value)))
+
+        def select_semantic_option(self, label_names, option_names, **kwargs):
+            self.calls.append(("select_semantic_option", label_names, option_names, kwargs))
+
+        def active_window(self):
+            return None
+
+    gateway = object.__new__(PywinautoFakturamaGateway)
+    session = FakeSession()
+    gateway.session = session
+    gateway.profile = UiaProfile.load(Path("config/fakturama-2.2.0-en.json"))
+    gateway._save_once = lambda: None
+
+    payment = PaymentMethodCandidate(
+        record_id="payment-1",
+        name="Bank Transfer",
+        description="Bank transfer",
+        payment_code="T",
+    )
+    gateway.session = session
+    gateway.create_payment_method(payment)
+
+    assert session.calls[0] == (
+        "invoke",
+        ["Create a new term of payment", "Create a new payment method", "New term of payment", "New payment method"],
+    )
+
+
+def test_combo_items_are_read_from_visible_popup_list_when_not_attached_to_combo() -> None:
+    class PopupText:
+        def __init__(self, text):
+            self._text = text
+            self.element_info = SimpleNamespace(control_type="Text")
+
+        def window_text(self):
+            return self._text
+
+        def is_visible(self):
+            return True
+
+        def rectangle(self):
+            return SimpleNamespace(left=10, top=20, right=200, bottom=30)
+
+    class ComboBox:
+        def __init__(self):
+            self.element_info = SimpleNamespace(control_type="ComboBox")
+            self._parent = SimpleNamespace(descendants=lambda: [self, PopupText("Credit transfer")])
+
+        def item_texts(self):
+            return []
+
+        def children(self):
+            return []
+
+        def parent(self):
+            return self._parent
+
+        def expand(self):
+            return None
+
+        def legacy_properties(self):
+            return {}
+
+    combo = ComboBox()
+
+    assert SemanticUiaSession._combo_item_texts(combo) == ["Credit transfer"]
+
+
 def test_displayed_decimal_parsing_handles_common_locales() -> None:
     assert _parse_decimal("€1,234.56") == Decimal("1234.56")
     assert _parse_decimal("1.234,56 €") == Decimal("1234.56")
     assert _parse_decimal("267,70") == Decimal("267.70")
+
+
+def test_payment_method_selection_does_not_require_payment_tab(tmp_path: Path) -> None:
+    class FakeSession:
+        def select_tab(self, names):
+            raise uia_module.UnsupportedAutomation(
+                f"expected one accessible control named {names!r}, found 0"
+            )
+
+        def select_optional_semantic_option(self, label_names, option_names):
+            return (
+                label_names == ["Payment", "Payment Method"]
+                and option_names == ["Bank Transfer"]
+            ) or (
+                label_names == ["Payment"] and option_names == ["Bank Transfer"]
+            )
+
+    gateway = object.__new__(PywinautoFakturamaGateway)
+    gateway._pending_debtor = object()
+    gateway._debtor_editor_tab_id = "tab-1"
+    gateway.session = FakeSession()
+    gateway.profile = UiaProfile.load(Path("config/fakturama-2.2.0-en.json"))
+    gateway._activate_editor_tab = lambda *_args, **_kwargs: "tab-1"
+
+    assert gateway.select_debtor_payment_method("Bank Transfer") is True
 
 
 def test_startup_discovers_ready_window_outside_launcher_process(
@@ -365,6 +480,50 @@ def test_explicit_identical_delivery_assigns_both_roles_without_add_action(
         call(["Delivery address"], True),
     ]
     session.invoke_upper_right_list_plus.assert_not_called()
+
+
+def test_distinct_delivery_assigns_only_main_invoice_role(
+    tmp_path: Path, monkeypatch
+) -> None:
+    gateway = PywinautoFakturamaGateway(
+        tmp_path / "Fakturama.exe", Path("config/fakturama-2.2.0-en.json")
+    )
+    session = Mock()
+    session.wait_for_control.return_value = SimpleNamespace(
+        element_info=SimpleNamespace(runtime_id=(42, 7, 4, -17))
+    )
+    session.read_semantic_option.return_value = "---"
+    gateway.session = session
+    monkeypatch.setattr(gateway, "_tab_runtime_ids", lambda names: set())
+    monkeypatch.setattr(gateway, "_fill_address", Mock())
+    monkeypatch.setattr(gateway, "_expand_address_roles", Mock())
+    billing = Address(
+        street="Friedrichstrasse 88",
+        zip="10117",
+        city="Berlin",
+        country="Germany",
+    )
+    delivery = Address(
+        street="Beusselstrasse 44",
+        zip="10553",
+        city="Berlin",
+        country="Germany",
+    )
+    debtor = Debtor(
+        company="Northstar Office GmbH",
+        first_name="Marta",
+        last_name="Klein",
+        billing_address=billing,
+        delivery_address=delivery,
+    )
+
+    gateway.open_new_debtor(debtor)
+
+    assert session.set_toggle.call_args_list == [
+        call(["Invoice address"], True),
+    ]
+    assert gateway._pending_debtor.company == "Northstar Office GmbH"
+    assert gateway._pending_debtor.delivery_address is None
 
 
 def test_unlabeled_modal_search_uses_the_only_editable_field(
@@ -905,3 +1064,140 @@ def test_stale_swt_editor_runtime_id_is_reacquired_by_unique_name(
 
     assert tab.selected is True
     assert current_id == "uia-42-999-4--17"
+
+
+def test_payment_code_combo_selection_with_credit_transfer(tmp_path: Path, monkeypatch) -> None:
+    class Combo:
+        element_info = SimpleNamespace(control_type="ComboBox")
+
+        def __init__(self):
+            self.value = "Cash"
+            self.selected = ""
+
+        def window_text(self):
+            return self.value
+
+        def is_visible(self):
+            return True
+
+        def is_enabled(self):
+            return True
+
+        def item_texts(self):
+            return ["Cash", "Credit transfer", "Credit card", "SEPA direct debit"]
+
+        def select(self, value):
+            self.selected = value
+            self.value = value
+
+        def get_value(self):
+            return self.value
+
+    class Edit:
+        element_info = SimpleNamespace(control_type="Edit")
+
+        def __init__(self, value=""):
+            self.value = value
+
+        def window_text(self):
+            return self.value
+
+        def is_visible(self):
+            return True
+
+        def is_enabled(self):
+            return True
+
+        def set_edit_text(self, value):
+            self.value = value
+
+        def get_value(self):
+            return self.value
+
+    class Label:
+        element_info = SimpleNamespace(control_type="Text")
+
+        def __init__(self, text):
+            self.text = text
+
+        def window_text(self):
+            return self.text
+
+        def is_visible(self):
+            return True
+
+        def is_enabled(self):
+            return False  # Static labels often report is_enabled=False in UIA
+
+    combo = Combo()
+    session = SemanticUiaSession(
+        tmp_path / "Fakturama.exe", UiaProfile.load(Path("config/fakturama-2.2.0-en.json"))
+    )
+
+    scope = SimpleNamespace(descendants=lambda: [combo])
+    session.select_semantic_option(
+        ["Payment code", "Code"],
+        ["Credit transfer"],
+        distinguishing_options=["Credit card", "SEPA direct debit"],
+        scope=scope,
+    )
+
+    assert combo.value == "Credit transfer"
+
+
+def test_save_once_falls_back_to_ctrl_s_when_button_missing(tmp_path: Path, monkeypatch) -> None:
+    gateway = PywinautoFakturamaGateway(
+        tmp_path / "Fakturama.exe", Path("config/fakturama-2.2.0-en.json")
+    )
+    sent_keys = []
+
+    class MockWindow:
+        def type_keys(self, keys):
+            sent_keys.append(keys)
+
+    win = MockWindow()
+    monkeypatch.setattr(gateway.session, "invoke", Mock(side_effect=uia_module.UnsupportedAutomation("no button")))
+    monkeypatch.setattr(gateway.session, "active_window", lambda: win)
+    monkeypatch.setattr(gateway.session, "root", lambda: win)
+
+    gateway._save_once()
+
+    assert sent_keys == ["^s"]
+
+
+def test_debtor_editor_tab_reacquisition_with_company_name(tmp_path: Path) -> None:
+    class Tab:
+        element_info = SimpleNamespace(
+            control_type="TabItem", runtime_id=(42, 6424740, 4, -17)
+        )
+
+        def __init__(self):
+            self.selected = False
+
+        def window_text(self):
+            return "*Lindgren Industrial Supplies B.V."
+
+        def select(self):
+            self.selected = True
+
+    tab = Tab()
+    root = SimpleNamespace(descendants=lambda **kwargs: [tab])
+    gateway = PywinautoFakturamaGateway(
+        tmp_path / "Fakturama.exe", Path("config/fakturama-2.2.0-en.json")
+    )
+    gateway.session.main = root
+    gateway._pending_debtor = SimpleNamespace(
+        company="Lindgren Industrial Supplies B.V.",
+        first_name="Sanne",
+        last_name="Verhoeven",
+    )
+
+    current_id = gateway._activate_editor_tab(
+        "stale-id-999", fallback_names=gateway._debtor_fallback_names()
+    )
+
+    assert tab.selected is True
+    assert current_id == "uia-42-6424740-4--17"
+
+
+

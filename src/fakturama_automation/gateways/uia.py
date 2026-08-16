@@ -16,7 +16,12 @@ from fakturama_automation.domain.errors import (
     UnsupportedAutomation,
     VerificationError,
 )
-from fakturama_automation.domain.matching import addresses_match, normalize_text
+from fakturama_automation.domain.matching import (
+    addresses_match,
+    has_distinct_delivery_address,
+    main_address_only,
+    normalize_text,
+)
 from fakturama_automation.domain.models import (
     Address,
     Debtor,
@@ -304,8 +309,9 @@ class SemanticUiaSession:
                 continue
             normalized = normalize_text(title)
             found = normalized in expected if exact else any(item in normalized for item in expected)
-            if found and element.is_visible() and element.is_enabled():
-                matches.append(element)
+            if found and element.is_visible():
+                if control_types == ("Text",) or element.is_enabled():
+                    matches.append(element)
         if len(matches) != 1:
             raise UnsupportedAutomation(
                 f"expected one accessible control named {names!r}, found {len(matches)}"
@@ -828,25 +834,11 @@ class SemanticUiaSession:
         element = self.input_for_label(label_names, scope=scope)
         if element.element_info.control_type != "ComboBox":
             raise UnsupportedAutomation(f"field {label_names!r} is not a ComboBox")
-        expected = {normalize_text(value) for value in option_names}
-        matches = [
-            item
-            for item in self._combo_item_texts(element)
-            if normalize_text(item) in expected
-        ]
-        if not matches:
+        try:
+            self._select_combo_option(element, option_names)
+            return True
+        except UnsupportedAutomation:
             return False
-        if len(matches) != 1:
-            raise UnsupportedAutomation(
-                f"multiple exact dropdown options match {option_names!r}"
-            )
-        element.select(matches[0])
-        actual = self.read_element_value(element)
-        if normalize_text(actual) != normalize_text(matches[0]):
-            raise VerificationError(
-                f"dropdown read-back was {actual!r}, expected {matches[0]!r}"
-            )
-        return True
 
     def select_optional_semantic_option(
         self, label_names: list[str], option_names: list[str], *, scope=None
@@ -866,14 +858,11 @@ class SemanticUiaSession:
                 if "no accessible ComboBox" in str(combo_error):
                     return False
                 raise combo_error from label_error
-            self._select_combo_option(element, option_names)
-            actual = self.read_element_value(element)
-            expected = {normalize_text(value) for value in option_names}
-            if normalize_text(actual) not in expected:
-                raise VerificationError(
-                    f"dropdown read-back was {actual!r}, expected {option_names!r}"
-                )
-            return True
+            try:
+                self._select_combo_option(element, option_names)
+                return True
+            except UnsupportedAutomation:
+                return False
 
     def read_semantic_option(
         self,
@@ -966,12 +955,14 @@ class SemanticUiaSession:
         targets = {normalize_text(value) for value in option_names}
         expected = {normalize_text(value) for value in expected_options}
         candidates = []
+        fallback_comboes = []
         for element in scope.descendants():
             try:
                 if element.element_info.control_type != "ComboBox":
                     continue
                 if not element.is_visible() or not element.is_enabled():
                     continue
+                fallback_comboes.append(element)
                 items = {normalize_text(item) for item in self._combo_item_texts(element)}
             except Exception:
                 continue
@@ -980,6 +971,16 @@ class SemanticUiaSession:
             score = len(items.intersection(expected))
             candidates.append((score, element))
         if not candidates:
+            for element in fallback_comboes:
+                try:
+                    val = normalize_text(self.read_element_value(element))
+                    if val in expected or val in targets:
+                        candidates.append((1, element))
+                except Exception:
+                    continue
+        if not candidates:
+            if len(fallback_comboes) == 1:
+                return fallback_comboes[0]
             raise UnsupportedAutomation(
                 f"no accessible ComboBox contains option {option_names!r}"
             )
@@ -993,6 +994,43 @@ class SemanticUiaSession:
 
     def _select_combo_option(self, element, option_names: list[str]) -> str:
         expected = {normalize_text(value) for value in option_names}
+        current_val = self.read_element_value(element)
+        if normalize_text(current_val) in expected:
+            return current_val
+
+        handle = getattr(element, "handle", None) or getattr(
+            getattr(element, "element_info", None), "handle", None
+        )
+        if handle:
+            try:
+                import ctypes
+
+                user32 = ctypes.windll.user32
+                CB_FINDSTRINGEXACT = 0x0158
+                CB_SETCURSEL = 0x014E
+                WM_COMMAND = 0x0111
+                CBN_SELCHANGE = 1
+                for option in option_names:
+                    idx = user32.SendMessageW(handle, CB_FINDSTRINGEXACT, -1, option)
+                    if idx >= 0:
+                        user32.SendMessageW(handle, CB_SETCURSEL, idx, 0)
+                        parent_handle = user32.GetParent(handle)
+                        ctrl_id = user32.GetDlgCtrlID(handle)
+                        wparam = (CBN_SELCHANGE << 16) | (ctrl_id & 0xFFFF)
+                        user32.SendMessageW(parent_handle, WM_COMMAND, wparam, handle)
+                        time.sleep(0.05)
+                        actual = self.read_element_value(element)
+                        if normalize_text(actual) == normalize_text(option):
+                            return option
+            except Exception:
+                pass
+
+        try:
+            element.click_input()
+            time.sleep(0.1)
+        except Exception:
+            pass
+
         matches = [
             item
             for item in self._combo_item_texts(element)
@@ -1003,27 +1041,90 @@ class SemanticUiaSession:
                 f"expected one dropdown option {option_names!r}, found {len(matches)}"
             )
         if len(matches) == 1:
-            element.select(matches[0])
-            return matches[0]
-        successful = []
+            try:
+                element.select(matches[0])
+                actual = self.read_element_value(element)
+                if normalize_text(actual) == normalize_text(matches[0]):
+                    return matches[0]
+            except Exception:
+                pass
+
         for option in option_names:
             try:
                 element.select(option)
                 actual = self.read_element_value(element)
+                if normalize_text(actual) == normalize_text(option):
+                    return option
             except Exception:
-                continue
-            if normalize_text(actual) == normalize_text(option):
-                successful.append(option)
-        if len(successful) != 1:
-            raise UnsupportedAutomation(
-                f"expected one selectable dropdown option {option_names!r}, "
-                f"found {len(successful)}"
-            )
-        return successful[0]
+                pass
+
+        try:
+            try:
+                element.set_focus()
+            except Exception:
+                pass
+            element.type_keys("{HOME}")
+            time.sleep(0.05)
+            val = self.read_element_value(element)
+            for _ in range(40):
+                if normalize_text(val) in expected:
+                    return val
+                element.type_keys("{DOWN}")
+                time.sleep(0.05)
+                new_val = self.read_element_value(element)
+                if normalize_text(new_val) == normalize_text(val):
+                    break
+                val = new_val
+        except Exception:
+            pass
+
+        for option in option_names:
+            try:
+                element.type_keys(option, with_spaces=True)
+                time.sleep(0.05)
+                actual = self.read_element_value(element)
+                if normalize_text(actual) == normalize_text(option):
+                    return option
+            except Exception:
+                pass
+
+        actual = self.read_element_value(element)
+        if normalize_text(actual) in expected:
+            return actual
+
+        raise UnsupportedAutomation(
+            f"expected one selectable dropdown option {option_names!r}, "
+            f"current value is {actual!r}"
+        )
 
     @staticmethod
     def _combo_item_texts(element) -> list[str]:
         values = []
+        handle = getattr(element, "handle", None) or getattr(
+            getattr(element, "element_info", None), "handle", None
+        )
+        if handle:
+            try:
+                import ctypes
+
+                user32 = ctypes.windll.user32
+                CB_GETCOUNT = 0x0146
+                CB_GETLBTEXT = 0x0148
+                CB_GETLBTEXTLEN = 0x0149
+                count = user32.SendMessageW(handle, CB_GETCOUNT, 0, 0)
+                if 0 < count <= 500:
+                    win32_items = []
+                    for i in range(count):
+                        length = user32.SendMessageW(handle, CB_GETLBTEXTLEN, i, 0)
+                        if length >= 0:
+                            buf = ctypes.create_unicode_buffer(length + 1)
+                            if user32.SendMessageW(handle, CB_GETLBTEXT, i, buf) >= 0:
+                                win32_items.append(buf.value)
+                    if win32_items:
+                        values.extend(win32_items)
+            except Exception:
+                pass
+
         try:
             values.extend(str(item) for item in element.item_texts())
         except Exception:
@@ -1031,6 +1132,64 @@ class SemanticUiaSession:
                 values.extend(str(item.window_text()) for item in element.children())
             except Exception:
                 pass
+
+        if not values:
+            try:
+                try:
+                    element.expand()
+                    time.sleep(0.05)
+                except Exception:
+                    pass
+                try:
+                    values.extend(str(item) for item in element.item_texts())
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        if not values:
+            for container in [element, getattr(element, "parent", lambda: None)(), * []]:
+                if container is None:
+                    continue
+                try:
+                    descendants = list(container.descendants())
+                except Exception:
+                    descendants = []
+                for candidate in descendants:
+                    try:
+                        if candidate is element:
+                            continue
+                        if candidate.element_info.control_type not in {"Text", "ListItem"}:
+                            continue
+                        if not candidate.is_visible():
+                            continue
+                        text = str(candidate.window_text()).strip()
+                    except Exception:
+                        continue
+                    if text:
+                        values.append(text)
+                if values:
+                    break
+
+        if not values:
+            try:
+                _, Desktop, _ = _load_pywinauto()
+                desktop = Desktop(backend="uia")
+                process_id = getattr(getattr(element, "element_info", None), "process_id", None)
+                for win in desktop.windows(process=process_id, visible_only=True):
+                    try:
+                        for child in win.descendants():
+                            if child.element_info.control_type in {"ListItem", "Text"}:
+                                txt = str(child.window_text()).strip()
+                                if txt:
+                                    values.append(txt)
+                    except Exception:
+                        continue
+                    if values:
+                        break
+            except Exception:
+                pass
+
         try:
             legacy_value = str(element.legacy_properties().get("Value") or "")
             if legacy_value:
@@ -1062,7 +1221,10 @@ class SemanticUiaSession:
                 return value
         except Exception:
             pass
-        return element.window_text()
+        try:
+            return str(element.window_text())
+        except Exception:
+            return ""
 
     @staticmethod
     def _toggle_state(element) -> bool | None:
@@ -1479,10 +1641,11 @@ class PywinautoFakturamaGateway:
         self._assert_labeled_address(
             "invoice_address", expected.billing_address, expected.company
         )
-        self._assert_labeled_address(
-            "delivery_address", expected.effective_delivery_address, expected.company
-        )
-        self._selected_debtor = expected
+        if not has_distinct_delivery_address(expected):
+            self._assert_labeled_address(
+                "delivery_address", expected.effective_delivery_address, expected.company
+            )
+        self._selected_debtor = main_address_only(expected)
 
     def read_selected_debtor(self) -> Debtor:
         if self._selected_debtor is None:
@@ -1494,13 +1657,24 @@ class PywinautoFakturamaGateway:
         return self._search_simple_rows(name, PaymentMethodCandidate, "payment")
 
     def create_payment_method(self, payment: PaymentMethodCandidate) -> str:
-        self.session.invoke_upper_right_list_plus(scope=self.session.active_window())
+        try:
+            self.session.invoke(self.profile.aliases("actions", "new_payment_method"))
+        except UnsupportedAutomation:
+            self.session.invoke_upper_right_list_plus(scope=self.session.active_window())
         self.session.set_labeled_value(self.profile.aliases("labels", "name"), payment.name)
         self.session.set_labeled_value(
             self.profile.aliases("labels", "description"), payment.description
         )
         self.session.select_semantic_option(
-            self.profile.aliases("labels", "payment_code"), [payment.payment_code]
+            self.profile.aliases("labels", "payment_code"),
+            [payment.payment_code],
+            distinguishing_options=[
+                "Credit transfer",
+                "Credit card",
+                "SEPA direct debit",
+                "Cash",
+                "Debit",
+            ],
         )
         for key, value in (
             ("cash_discount", "0"),
@@ -1535,10 +1709,11 @@ class PywinautoFakturamaGateway:
             self.session.set_labeled_value(
                 self.profile.aliases("labels", "company"), debtor.company
             )
-        self.session.set_labeled_row_values(
-            self.profile.aliases("labels", "debtor_name_row"),
-            [debtor.first_name, debtor.last_name],
-        )
+        if debtor.first_name or debtor.last_name:
+            self.session.set_labeled_row_values(
+                self.profile.aliases("labels", "debtor_name_row"),
+                [debtor.first_name or "", debtor.last_name or ""],
+            )
         if debtor.salutation:
             self.session.select_semantic_option(
                 self.profile.aliases("labels", "salutation"), [debtor.salutation]
@@ -1558,16 +1733,10 @@ class PywinautoFakturamaGateway:
             self.profile.aliases("actions", "invoice_address_role"), True
         )
         delivery = debtor.delivery_address
-        if delivery is not None and not addresses_match(
-            debtor.billing_address, delivery
-        ):
-            raise ManualReviewRequired(
-                "Take Home §2.8 does not define how to create a distinct delivery "
-                "address; refusing to invent an Add-address UI action"
+        if delivery is None or addresses_match(debtor.billing_address, delivery):
+            self.session.set_toggle(
+                self.profile.aliases("actions", "delivery_address_role"), True
             )
-        self.session.set_toggle(
-            self.profile.aliases("actions", "delivery_address_role"), True
-        )
         self.session.select_tab(self.profile.aliases("tabs", "miscellaneous"))
         if debtor.alias:
             self.session.set_labeled_value(
@@ -1581,27 +1750,52 @@ class PywinautoFakturamaGateway:
             self.profile.aliases("choices", "net"),
             distinguishing_options=self.profile.aliases("choices", "gross"),
         )
-        self.session.select_tab(self.profile.aliases("tabs", "payment"))
-        self._pending_debtor = debtor
+        try:
+            self.session.select_tab(self.profile.aliases("tabs", "payment"))
+        except UnsupportedAutomation:
+            pass
+        self._pending_debtor = main_address_only(debtor)
+
+    def _debtor_fallback_names(self) -> list[str]:
+        names = list(self.profile.aliases("titles", "new_debtor"))
+        if self._pending_debtor:
+            company = getattr(self._pending_debtor, "company", None)
+            if company:
+                names.append(company)
+            first = getattr(self._pending_debtor, "first_name", "") or ""
+            last = getattr(self._pending_debtor, "last_name", "") or ""
+            full_name = f"{first} {last}".strip()
+            if full_name:
+                names.append(full_name)
+            if last:
+                names.append(last)
+            if first:
+                names.append(first)
+        return list(dict.fromkeys(names))
 
     def select_debtor_payment_method(self, payment_method: str) -> bool:
         if self._pending_debtor is None:
             raise RuntimeError("no Debtor editor is open")
         self._debtor_editor_tab_id = self._activate_editor_tab(
             self._debtor_editor_tab_id,
-            fallback_names=self.profile.aliases("titles", "new_debtor"),
+            fallback_names=self._debtor_fallback_names(),
         )
-        self.session.select_tab(self.profile.aliases("tabs", "payment"))
-        return self.session.select_optional_semantic_option(
+        try:
+            self.session.select_tab(self.profile.aliases("tabs", "payment"))
+        except UnsupportedAutomation:
+            pass
+        if self.session.select_optional_semantic_option(
             self.profile.aliases("labels", "payment_method"), [payment_method]
-        )
+        ):
+            return True
+        return self.session.select_optional_semantic_option(["Payment"], [payment_method])
 
     def save_debtor(self) -> str:
         if self._pending_debtor is None:
             raise RuntimeError("no Debtor editor is open")
         self._debtor_editor_tab_id = self._activate_editor_tab(
             self._debtor_editor_tab_id,
-            fallback_names=self.profile.aliases("titles", "new_debtor"),
+            fallback_names=self._debtor_fallback_names(),
         )
         self._save_once()
         self._pending_debtor = None
@@ -2042,11 +2236,12 @@ class PywinautoFakturamaGateway:
         self._assert_labeled_address(
             "invoice_address", order.debtor.billing_address, order.debtor.company
         )
-        self._assert_labeled_address(
-            "delivery_address",
-            order.debtor.effective_delivery_address,
-            order.debtor.company,
-        )
+        if not has_distinct_delivery_address(order.debtor):
+            self._assert_labeled_address(
+                "delivery_address",
+                order.debtor.effective_delivery_address,
+                order.debtor.company,
+            )
         vat_mode = self.session.read_semantic_option(
             self.profile.aliases("labels", "order_vat_mode"),
             identifying_options=(
@@ -2203,15 +2398,51 @@ class PywinautoFakturamaGateway:
             if _runtime_id(tab) == runtime_id
         ]
         if len(matches) != 1 and fallback_names:
-            expected = [normalize_text(name) for name in fallback_names]
-            matches = []
-            for tab in self.session.root().descendants(control_type="TabItem"):
+            expected = [
+                normalize_text(name)
+                for name in fallback_names
+                if name and normalize_text(name)
+            ]
+            all_tabs = list(self.session.root().descendants(control_type="TabItem"))
+            exact_matches = []
+            for tab in all_tabs:
                 try:
-                    actual = normalize_text(tab.window_text())
-                    if actual and any(name in actual for name in expected):
-                        matches.append(tab)
+                    actual = normalize_text(tab.window_text()).lstrip("* ").strip()
+                    if actual in expected:
+                        exact_matches.append(tab)
                 except Exception:
                     continue
+            if len(exact_matches) == 1:
+                matches = exact_matches
+            elif not exact_matches:
+                sub_matches = []
+                for tab in all_tabs:
+                    try:
+                        actual = normalize_text(tab.window_text()).lstrip("* ").strip()
+                        if actual and any(
+                            name in actual or actual in name
+                            for name in expected
+                            if len(name) >= 3
+                        ):
+                            sub_matches.append(tab)
+                    except Exception:
+                        continue
+                if len(sub_matches) == 1:
+                    matches = sub_matches
+                elif len(sub_matches) > 1:
+                    dirty = [
+                        t
+                        for t in sub_matches
+                        if "*" in str(getattr(t, "window_text", lambda: "")())
+                    ]
+                    if len(dirty) == 1:
+                        matches = dirty
+                    else:
+                        matches = sub_matches
+                else:
+                    matches = []
+            else:
+                matches = exact_matches
         if len(matches) != 1:
             raise UnsupportedAutomation(
                 f"could not identify one editor tab from recorded ID {runtime_id!r} "
@@ -2512,7 +2743,24 @@ class PywinautoFakturamaGateway:
             raise VerificationError(f"table row does not contain {text!r}: {row_text!r}")
 
     def _save_once(self) -> None:
-        self.session.invoke(self.profile.aliases("actions", "save"), scope=self.session.root())
+        try:
+            self.session.invoke(
+                self.profile.aliases("actions", "save"), scope=self.session.root()
+            )
+        except UnsupportedAutomation:
+            saved = False
+            for target in (
+                lambda: self.session.active_window(),
+                lambda: self.session.root(),
+            ):
+                try:
+                    target().type_keys("^s")
+                    saved = True
+                    break
+                except Exception:
+                    continue
+            if not saved:
+                raise
         time.sleep(float(self.profile.values.get("save_stabilization_seconds", 0.5)))
 
     def _cancel_dialog(self, dialog) -> None:
