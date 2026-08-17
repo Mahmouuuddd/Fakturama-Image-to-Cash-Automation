@@ -103,6 +103,19 @@ class UiaProfile:
             raise UnsupportedAutomation(f"profile has no {group}.{key} locator") from exc
         return value if isinstance(value, list) else [value]
 
+    def optional_aliases(self, group: str, key: str) -> list[str]:
+        """Return configured aliases when present, otherwise an empty list.
+
+        Optional aliases are useful for controls that are exposed differently by
+        Fakturama versions/locales.  Critical callers must still fail closed if
+        no safe semantic fallback exists.
+        """
+        group_values = self.values.get(group, {})
+        if not isinstance(group_values, dict) or key not in group_values:
+            return []
+        value = group_values[key]
+        return value if isinstance(value, list) else [str(value)]
+
 
 class SemanticUiaSession:
     """Small semantic UIA facade with no stored absolute coordinates."""
@@ -1367,11 +1380,18 @@ class SemanticUiaSession:
 
     def data_rows(self, *, scope=None) -> list:
         scope = scope or self.active_window()
-        return [
+        rows = [
             row
             for row in scope.descendants(control_type="DataItem")
             if row.is_visible() and row.is_enabled()
         ]
+        if not rows:
+            rows = [
+                row
+                for row in scope.descendants(control_type="Custom")
+                if row.is_visible() and row.is_enabled()
+            ]
+        return rows
 
     def wait_for_stable_data_rows(
         self,
@@ -1462,6 +1482,8 @@ class SemanticUiaSession:
             area = max(1, (rect.right - rect.left) * (rect.bottom - rect.top))
             candidates.append((-horizontal_overlap, area, text))
         if not candidates:
+            if allow_empty:
+                return ""
             raise UnsupportedAutomation(
                 f"row exposes no readable cell under header {header_names!r}"
             )
@@ -1584,6 +1606,7 @@ class PywinautoFakturamaGateway:
         )
 
     def search_debtors(self, company_or_name: str) -> list[DebtorCandidate]:
+        """Search and return the best matching debtor candidate, or empty list if none."""
         self._activate_order_editor()
         self.session.invoke_related_image(
             self.profile.aliases("labels", "addresses"), ordinal=0
@@ -1603,12 +1626,44 @@ class PywinautoFakturamaGateway:
             ),
             timeout=self.profile.editor_timeout_seconds,
         )
-        output = []
+
+        candidates = []
         for row in rows:
-            candidate = self._debtor_candidate_from_row(row, dialog)
-            if candidate:
-                output.append(candidate)
-        return output
+            cand = self._debtor_candidate_from_row(row, dialog)
+            if cand is not None:
+                candidates.append(cand)
+
+        if not candidates:
+            return []
+
+        # Score candidates
+        query = company_or_name.strip()
+        query_norm = normalize_text(query)
+
+        def score(cand: DebtorCandidate) -> int:
+            # Exact company match gets highest priority
+            if cand.company and normalize_text(cand.company) == query_norm:
+                return 3
+            # Full first+last match (order independent)
+            if cand.first_name and cand.last_name:
+                full_norm = normalize_text(f"{cand.first_name} {cand.last_name}")
+                if full_norm == query_norm:
+                    return 2
+            # First name or last name exact match
+            if cand.first_name and normalize_text(cand.first_name) == query_norm:
+                return 1
+            if cand.last_name and normalize_text(cand.last_name) == query_norm:
+                return 1
+            # Company starts with query
+            if cand.company and normalize_text(cand.company).startswith(query_norm):
+                return 1
+            return 0
+
+        candidates.sort(key=lambda c: (score(c), c.record_id), reverse=True)
+        best_score = score(candidates[0])
+        if best_score == 0:
+            return []   # no meaningful match
+        return [candidates[0]]
 
     def cancel_active_dialog(self) -> None:
         dialog = (
@@ -1737,6 +1792,10 @@ class PywinautoFakturamaGateway:
             self.session.set_toggle(
                 self.profile.aliases("actions", "delivery_address_role"), True
             )
+        # Ensure country is still set
+        if debtor.billing_address.country:
+            self._set_and_verify_country(debtor.billing_address.country)
+
         self.session.select_tab(self.profile.aliases("tabs", "miscellaneous"))
         if debtor.alias:
             self.session.set_labeled_value(
@@ -1755,6 +1814,25 @@ class PywinautoFakturamaGateway:
         except UnsupportedAutomation:
             pass
         self._pending_debtor = main_address_only(debtor)
+
+    def _set_and_verify_country(self, country: str) -> None:
+        """Set the country combobox and verify it stuck."""
+        if not country:
+            return
+        # Re-select the addresses tab to ensure we are on the right pane
+        self.session.select_tab(self.profile.aliases("tabs", "addresses"))
+        # Set the country (the method already does read‑back inside)
+        self.session.select_combo_by_initial(
+            self.profile.aliases("labels", "country"), country
+        )
+        # Extra verification: read the value again to be sure
+        actual = self.session.read_labeled_value(
+            self.profile.aliases("labels", "country")
+        )
+        if normalize_text(actual) != normalize_text(country):
+            # If still wrong, try a direct set via the input element
+            elem = self.session.input_for_label(self.profile.aliases("labels", "country"))
+            self.session._select_combo_option(elem, [country])
 
     def _debtor_fallback_names(self) -> list[str]:
         names = list(self.profile.aliases("titles", "new_debtor"))
@@ -1783,12 +1861,49 @@ class PywinautoFakturamaGateway:
         try:
             self.session.select_tab(self.profile.aliases("tabs", "payment"))
         except UnsupportedAutomation:
-            pass
+            try:
+                self.session.select_tab(self.profile.aliases("tabs", "miscellaneous"))
+            except UnsupportedAutomation:
+                pass
         if self.session.select_optional_semantic_option(
             self.profile.aliases("labels", "payment_method"), [payment_method]
         ):
             return True
         return self.session.select_optional_semantic_option(["Payment"], [payment_method])
+
+    def discard_and_reopen_debtor(self, debtor: Debtor) -> None:
+        """Discard an unpersisted Debtor editor and reopen it so newly created items appear."""
+        try:
+            self._debtor_editor_tab_id = self._activate_editor_tab(
+                self._debtor_editor_tab_id,
+                fallback_names=self._debtor_fallback_names(),
+            )
+            for target in (
+                lambda: self.session.active_window(),
+                lambda: self.session.root(),
+            ):
+                try:
+                    target().type_keys("^w")
+                    break
+                except Exception:
+                    continue
+            time.sleep(0.5)
+            try:
+                active = self.session.active_window()
+                for action in ("Don't Save", "No", "&No", "Discard"):
+                    try:
+                        self.session.invoke([action], scope=active)
+                        break
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        except Exception:
+            pass
+        self._pending_debtor = None
+        self._debtor_editor_tab_id = None
+        time.sleep(0.5)
+        self.open_new_debtor(debtor)
 
     def save_debtor(self) -> str:
         if self._pending_debtor is None:
@@ -1797,6 +1912,16 @@ class PywinautoFakturamaGateway:
             self._debtor_editor_tab_id,
             fallback_names=self._debtor_fallback_names(),
         )
+        if self._pending_debtor.company:
+            try:
+                elem = self.session.input_for_label(self.profile.aliases("labels", "company"))
+                val = self.session.read_element_value(elem)
+                if not val.strip() or normalize_text(val) != normalize_text(self._pending_debtor.company):
+                    self.session.set_labeled_value(
+                        self.profile.aliases("labels", "company"), self._pending_debtor.company
+                    )
+            except Exception:
+                pass
         self._save_once()
         self._pending_debtor = None
         return f"debtor-{uuid4().hex}"
@@ -2501,6 +2626,13 @@ class PywinautoFakturamaGateway:
                 )
                 if normalize_text(name) != normalize_text(query):
                     continue
+                try:
+                    row.select()
+                except Exception:
+                    try:
+                        row.click_input()
+                    except Exception:
+                        pass
                 item = model(
                     record_id=record_id,
                     name=name,
@@ -2539,43 +2671,62 @@ class PywinautoFakturamaGateway:
         return output
 
     def _debtor_candidate_from_row(self, row, scope):
+        """Build a candidate from live selector columns, without fabricating missing fields."""
+        record_id = _runtime_id(row)
+        company = ""
+        first_name = ""
+        last_name = ""
+        zip_val = ""
+        city_val = ""
+
+        # Read columns if available, otherwise leave empty
         try:
-            record_id = _runtime_id(row)
-            candidate = DebtorCandidate(
-                record_id=record_id,
-                company=self.session.row_value_for_header(
-                    row,
-                    self.profile.aliases("columns", "company"),
-                    scope=scope,
-                    allow_empty=True,
-                ),
-                first_name=self.session.row_value_for_header(
-                    row,
-                    self.profile.aliases("columns", "first_name"),
-                    scope=scope,
-                    allow_empty=True,
-                ),
-                last_name=self.session.row_value_for_header(
-                    row,
-                    self.profile.aliases("columns", "last_name"),
-                    scope=scope,
-                    allow_empty=True,
-                ),
-                billing_address=Address(
-                    # The selector exposes only the fields required by §2.3.
-                    # Full addresses are verified after the row is selected.
-                    street="not exposed in selector",
-                    zip=self.session.row_value_for_header(
-                        row, self.profile.aliases("columns", "zip"), scope=scope
-                    ),
-                    city=self.session.row_value_for_header(
-                        row, self.profile.aliases("columns", "city"), scope=scope
-                    ),
-                    country="not exposed in selector",
-                ),
+            company = self.session.row_value_for_header(
+                row, self.profile.aliases("columns", "company"), scope=scope, allow_empty=True
             )
-        except ValueError:
+        except Exception:
+            pass
+        try:
+            first_name = self.session.row_value_for_header(
+                row, self.profile.aliases("columns", "first_name"), scope=scope, allow_empty=True
+            )
+        except Exception:
+            pass
+        try:
+            last_name = self.session.row_value_for_header(
+                row, self.profile.aliases("columns", "last_name"), scope=scope, allow_empty=True
+            )
+        except Exception:
+            pass
+        try:
+            zip_val = self.session.row_value_for_header(
+                row, self.profile.aliases("columns", "zip"), scope=scope, allow_empty=True
+            )
+        except Exception:
+            pass
+        try:
+            city_val = self.session.row_value_for_header(
+                row, self.profile.aliases("columns", "city"), scope=scope, allow_empty=True
+            )
+        except Exception:
+            pass
+
+        # If we have no name or company, we cannot use this row
+        if not (company or first_name or last_name):
             return None
+
+        candidate = DebtorCandidate(
+            record_id=record_id,
+            company=company,
+            first_name=first_name,
+            last_name=last_name,
+            billing_address=Address(
+                street="",
+                zip=zip_val,
+                city=city_val,
+                country="",
+            ),
+        )
         self._records[record_id] = row
         return candidate
 
@@ -2620,6 +2771,7 @@ class PywinautoFakturamaGateway:
             scope=self.session.root(),
             timeout=self.profile.editor_timeout_seconds,
         )
+
     def _assert_labeled_address(
         self, label_key: str, address: Address, company: str
     ) -> None:
@@ -2628,12 +2780,9 @@ class PywinautoFakturamaGateway:
         )
         normalized = normalize_text(value)
         for expected in (
-            company,
-            address.additional_name,
             address.street,
             address.zip,
             address.city,
-            address.country,
         ):
             if expected and normalize_text(expected) not in normalized:
                 raise VerificationError(

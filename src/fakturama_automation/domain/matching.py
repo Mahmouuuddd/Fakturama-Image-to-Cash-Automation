@@ -47,11 +47,35 @@ def main_address_only(debtor: Debtor) -> Debtor:
 
 
 def debtor_matches(expected: Debtor, actual: DebtorCandidate) -> bool:
+    company_match = (
+        not expected.company
+        or not actual.company
+        or normalize_text(expected.company) == normalize_text(actual.company)
+    )
+    first_match = (
+        not expected.first_name
+        or not actual.first_name
+        or normalize_text(expected.first_name) == normalize_text(actual.first_name)
+    )
+    last_match = (
+        not expected.last_name
+        or not actual.last_name
+        or normalize_text(expected.last_name) == normalize_text(actual.last_name)
+    )
+    identity_match = (
+        (expected.company and normalize_text(expected.company) == normalize_text(actual.company))
+        or (
+            bool(expected.first_name or expected.last_name)
+            and normalize_text(expected.first_name) == normalize_text(actual.first_name)
+            and normalize_text(expected.last_name) == normalize_text(actual.last_name)
+        )
+    )
     return all(
         (
-            normalize_text(expected.company) == normalize_text(actual.company),
-            normalize_text(expected.first_name) == normalize_text(actual.first_name),
-            normalize_text(expected.last_name) == normalize_text(actual.last_name),
+            identity_match,
+            company_match,
+            first_match,
+            last_match,
             normalize_postal_code(expected.billing_address.zip)
             == normalize_postal_code(actual.billing_address.zip),
             normalize_text(expected.billing_address.city)

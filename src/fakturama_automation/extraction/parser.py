@@ -26,6 +26,8 @@ from .verification import (
     trusted_address_claims,
     trusted_company_claims,
     trusted_contact_name_claims,
+    trusted_contact_details_claims,
+    trusted_payment_claims,
     trusted_item_claims,
     trusted_total_claims,
     verify_claims,
@@ -198,6 +200,8 @@ class CompatibleChatOrderParser:
             *trusted_addresses,
             *trusted_company_claims(evidence),
             *trusted_contact_name_claims(evidence),
+            *trusted_contact_details_claims(evidence),
+            *trusted_payment_claims(evidence),
         ]
         trusted_count, trusted_claims = trusted_item_claims(evidence)
         trusted_totals = trusted_total_claims(evidence)

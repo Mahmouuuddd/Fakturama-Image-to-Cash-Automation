@@ -122,6 +122,12 @@ class SimulatedFakturamaGateway:
         self._pending_debtor = deepcopy(main_address_only(debtor))
         self._pending_payment_method = None
 
+    def discard_and_reopen_debtor(self, debtor: Debtor) -> None:
+        self.events.append("discard_and_reopen_debtor")
+        self._pending_debtor = None
+        self._pending_payment_method = None
+        self.open_new_debtor(debtor)
+
     def select_debtor_payment_method(self, payment_method: str) -> bool:
         if self._pending_debtor is None:
             raise RuntimeError("no Debtor editor is open")

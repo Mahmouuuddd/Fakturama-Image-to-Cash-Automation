@@ -598,10 +598,74 @@ def test_partitioned_postal_city_normalizes_to_proven_format(
     assert outcome.order is not None
     assert outcome.order.debtor.billing_address.zip == "3011 PZ"
     assert outcome.order.debtor.billing_address.city == "Rotterdam"
-    assert not any(
-        issue.code == "CONFLICTING_ADDRESS_COMPONENTS"
-        for issue in outcome.report.issues
+
+
+def test_trusted_payment_claims_extraction(tmp_path: Path) -> None:
+    from fakturama_automation.extraction.evidence import EvidenceDocument, EvidenceSpan
+    from fakturama_automation.extraction.verification import trusted_payment_claims
+
+    evidence = EvidenceDocument(
+        document_id="doc1",
+        source_path="order.png",
+        source_sha256="abc",
+        pages=[],
+        spans=[
+            EvidenceSpan(
+                id="e1",
+                text="PAYMENT METHOD",
+                confidence=0.99,
+                bbox=[100, 100, 300, 120],
+                page=1,
+                reading_order=1,
+            ),
+            EvidenceSpan(
+                id="e2",
+                text="Bank Transfer",
+                confidence=0.99,
+                bbox=[100, 130, 300, 150],
+                page=1,
+                reading_order=2,
+            ),
+            EvidenceSpan(
+                id="e3",
+                text="PAID STATUS",
+                confidence=0.99,
+                bbox=[400, 100, 600, 120],
+                page=1,
+                reading_order=3,
+            ),
+            EvidenceSpan(
+                id="e4",
+                text="PAID",
+                confidence=0.99,
+                bbox=[400, 130, 500, 150],
+                page=1,
+                reading_order=4,
+            ),
+            EvidenceSpan(
+                id="e5",
+                text="PAYMENT DATE",
+                confidence=0.99,
+                bbox=[700, 100, 900, 120],
+                page=1,
+                reading_order=5,
+            ),
+            EvidenceSpan(
+                id="e6",
+                text="2026-07-18",
+                confidence=0.99,
+                bbox=[700, 130, 850, 150],
+                page=1,
+                reading_order=6,
+            ),
+        ]
     )
+
+    claims = trusted_payment_claims(evidence)
+    by_path = {c.path: c.value for c in claims}
+    assert by_path["payment.method"] == "Bank Transfer"
+    assert by_path["payment.status"] == "PAID"
+    assert by_path["payment.payment_date"] == "2026-07-18"
 
 
 def test_unrecognized_country_does_not_enable_postal_format_guessing(

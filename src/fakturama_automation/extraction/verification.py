@@ -119,6 +119,15 @@ _ADDRESS_SECTION_BOUNDARIES = {
     "remarks",
 }
 _PAYMENT_DATE_LABELS = {"payment date", "paid date", "date paid"}
+_PAYMENT_STATUS_LABELS = {"paid status", "payment status", "status"}
+_PAYMENT_METHOD_LABELS = {
+    "payment method",
+    "method of payment",
+    "payment term",
+    "terms of payment",
+}
+_EMAIL_LABELS = {"email", "e-mail", "mail", "e - mail"}
+_PHONE_LABELS = {"telephone", "phone", "tel", "mobile", "phone number", "telephone number"}
 
 
 @dataclass(frozen=True)
@@ -377,6 +386,155 @@ def trusted_contact_name_claims(evidence: EvidenceDocument) -> list[FieldClaim]:
             ),
         ]
     return []
+
+
+def trusted_contact_details_claims(evidence: EvidenceDocument) -> list[FieldClaim]:
+    """Ground email and telephone from explicit labels."""
+    claims: list[FieldClaim] = []
+
+    # Email
+    email_labels = [
+        span for span in evidence.spans if _label_text(span.text) in _EMAIL_LABELS
+    ]
+    if len(email_labels) == 1:
+        label = email_labels[0]
+        candidates = []
+        for span in evidence.spans:
+            if span.id == label.id or span.page != label.page or not span.text.strip():
+                continue
+            score = _text_label_value_score(label, span)
+            if score is not None and "@" in span.text:
+                candidates.append((score, span))
+        candidates.sort(key=lambda item: item[0])
+        if candidates:
+            best_score = candidates[0][0]
+            best = [span for score, span in candidates if score == best_score]
+            if len(best) == 1:
+                claims.append(
+                    FieldClaim(
+                        path="debtor.billing_address.email",
+                        value=best[0].text.strip(),
+                        evidence_ids=[label.id, best[0].id],
+                        ambiguity=None,
+                    )
+                )
+
+    # Telephone
+    phone_labels = [
+        span for span in evidence.spans if _label_text(span.text) in _PHONE_LABELS
+    ]
+    if len(phone_labels) == 1:
+        label = phone_labels[0]
+        candidates = []
+        for span in evidence.spans:
+            if span.id == label.id or span.page != label.page or not span.text.strip():
+                continue
+            score = _text_label_value_score(label, span)
+            if score is not None and re.search(r"\d{3,}", span.text):
+                candidates.append((score, span))
+        candidates.sort(key=lambda item: item[0])
+        if candidates:
+            best_score = candidates[0][0]
+            best = [span for score, span in candidates if score == best_score]
+            if len(best) == 1:
+                claims.append(
+                    FieldClaim(
+                        path="debtor.billing_address.telephone",
+                        value=best[0].text.strip(),
+                        evidence_ids=[label.id, best[0].id],
+                        ambiguity=None,
+                    )
+                )
+
+    return claims
+
+
+def trusted_payment_claims(evidence: EvidenceDocument) -> list[FieldClaim]:
+    """Ground payment method, payment status, and payment date from explicit labels."""
+    claims: list[FieldClaim] = []
+
+    # 1. Payment Date
+    date_labels = [
+        span for span in evidence.spans if _label_text(span.text) in _PAYMENT_DATE_LABELS
+    ]
+    if len(date_labels) == 1:
+        label = date_labels[0]
+        candidates = []
+        for span in evidence.spans:
+            if span.id == label.id or span.page != label.page or not span.text.strip():
+                continue
+            score = _text_label_value_score(label, span)
+            if score is not None and re.search(r"\d{4}[-/.]\d{2}[-/.]\d{2}|\d{2}[-/.]\d{2}[-/.]\d{4}", span.text):
+                candidates.append((score, span))
+        candidates.sort(key=lambda item: item[0])
+        if candidates:
+            best_score = candidates[0][0]
+            best = [span for score, span in candidates if score == best_score]
+            if len(best) == 1:
+                claims.append(
+                    FieldClaim(
+                        path="payment.payment_date",
+                        value=best[0].text.strip(),
+                        evidence_ids=[label.id, best[0].id],
+                        ambiguity=None,
+                    )
+                )
+
+    # 2. Payment Status
+    status_labels = [
+        span for span in evidence.spans if _label_text(span.text) in _PAYMENT_STATUS_LABELS
+    ]
+    if len(status_labels) == 1:
+        label = status_labels[0]
+        candidates = []
+        for span in evidence.spans:
+            if span.id == label.id or span.page != label.page or not span.text.strip():
+                continue
+            score = _text_label_value_score(label, span)
+            if score is not None and _label_text(span.text).upper() in {"PAID", "UNPAID", "OVERDUE", "REFUNDED"}:
+                candidates.append((score, span))
+        candidates.sort(key=lambda item: item[0])
+        if candidates:
+            best_score = candidates[0][0]
+            best = [span for score, span in candidates if score == best_score]
+            if len(best) == 1:
+                claims.append(
+                    FieldClaim(
+                        path="payment.status",
+                        value=_label_text(best[0].text).upper(),
+                        evidence_ids=[label.id, best[0].id],
+                        ambiguity=None,
+                    )
+                )
+
+    # 3. Payment Method
+    method_labels = [
+        span for span in evidence.spans if _label_text(span.text) in _PAYMENT_METHOD_LABELS
+    ]
+    if len(method_labels) == 1:
+        label = method_labels[0]
+        candidates = []
+        for span in evidence.spans:
+            if span.id == label.id or span.page != label.page or not span.text.strip():
+                continue
+            score = _text_label_value_score(label, span)
+            if score is not None:
+                candidates.append((score, span))
+        candidates.sort(key=lambda item: item[0])
+        if candidates:
+            best_score = candidates[0][0]
+            best = [span for score, span in candidates if score == best_score]
+            if len(best) == 1:
+                claims.append(
+                    FieldClaim(
+                        path="payment.method",
+                        value=best[0].text.strip(),
+                        evidence_ids=[label.id, best[0].id],
+                        ambiguity=None,
+                    )
+                )
+
+    return claims
 
 
 def merge_trusted_debtor_claims(

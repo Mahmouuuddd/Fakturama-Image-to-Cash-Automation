@@ -169,20 +169,24 @@ class WorkflowRunner:
 
     def _resolve_debtor(self, order: OrderInput) -> None:
         debtor = order.debtor
-        query = debtor.company or " ".join((debtor.first_name, debtor.last_name)).strip()
+        contact_name = " ".join(
+            part for part in (debtor.first_name, debtor.last_name) if part
+        ).strip()
+        query = contact_name or debtor.company or ""
         candidates = self.gateway.search_debtors(query)
         matches = exact_matches(candidates, lambda candidate: debtor_matches(debtor, candidate))
         identity_matches = [
             candidate
             for candidate in candidates
-            if normalize_text(candidate.company) == normalize_text(debtor.company)
-            and normalize_text(candidate.first_name) == normalize_text(debtor.first_name)
-            and normalize_text(candidate.last_name) == normalize_text(debtor.last_name)
+            if (
+                normalize_text(candidate.first_name) == normalize_text(debtor.first_name)
+                and normalize_text(candidate.last_name) == normalize_text(debtor.last_name)
+            )
         ]
         conflicting_identity = [
             candidate for candidate in identity_matches if candidate not in matches
         ]
-        if conflicting_identity:
+        if conflicting_identity and not matches:
             self.gateway.cancel_active_dialog()
             raise ManualReviewRequired(
                 f"Debtor search for {query!r} contains the same identity with "
@@ -205,21 +209,23 @@ class WorkflowRunner:
             if not self.gateway.select_debtor_payment_method(order.payment.method):
                 self._ensure_payment_method(order.payment.method)
                 if not self.gateway.select_debtor_payment_method(order.payment.method):
-                    raise ManualReviewRequired(
-                        f"Payment Method {order.payment.method!r} could not be selected "
-                        "in the open Debtor after exact creation/reuse"
-                    )
+                    self.gateway.discard_and_reopen_debtor(debtor)
+                    if not self.gateway.select_debtor_payment_method(order.payment.method):
+                        raise ManualReviewRequired(
+                            f"Payment Method {order.payment.method!r} could not be selected "
+                            "in the open Debtor after exact creation/reuse"
+                        )
             self.gateway.save_debtor()
             candidates = self.gateway.search_debtors(query)
             matches = exact_matches(
                 candidates, lambda candidate: debtor_matches(debtor, candidate)
             )
-            if len(matches) != 1:
+            if not matches:
                 raise ManualReviewRequired(
-                    f"newly created Debtor {query!r} could not be reselected unambiguously"
+                    f"newly created Debtor {query!r} could not be found in address selector"
                 )
 
-        self.gateway.select_debtor(matches[0].record_id)
+        self.gateway.select_debtor(matches[-1].record_id)
         selected = self.gateway.read_selected_debtor()
         if not addresses_match(debtor.billing_address, selected.billing_address):
             raise VerificationError("selected Debtor billing address differs from source")
